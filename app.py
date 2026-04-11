@@ -80,9 +80,10 @@
 
 import streamlit as st
 import json
-
+import requests
 from agents.coordinator import TravelPlannerCoordinator
-
+if "history" not in st.session_state:
+    st.session_state["history"] = []
 
 # ---------------------------------------------
 # PAGE CONFIG
@@ -129,11 +130,51 @@ if run_button:
         st.warning("Please describe your travel plan.")
         st.stop()
 
+    # ✅ ADD HERE
+    st.session_state["history"].append(user_input)
+ 
     coordinator = TravelPlannerCoordinator()
 
-    with st.spinner("Planning your trip…"):
-        result = coordinator.run(user_input)
+    status = st.empty()
 
+    # Step-by-step updates (simulate agent thinking)
+    status.info("🧠 Understanding your intent...")
+    status.info("🌍 Finding destinations...")
+    status.info("💰 Analyzing budget...")
+    status.info("✨ Curating experiences...")
+    status.info("🗓️ Building itinerary...")
+
+    # Prepare input with memory
+    history = "\n".join(st.session_state["history"])
+
+    enhanced_input = f"""
+    PAST USER CONTEXT:
+    {history}
+
+    CURRENT REQUEST:
+    {user_input}
+    """
+
+    # API call
+    try:
+        response = requests.post(
+            "http://127.0.0.1:8000/plan-trip",
+            json={"user_input": enhanced_input},
+            timeout=60
+        )
+
+        result = response.json()
+        status.success("✅ Travel plan generated successfully!")
+
+    except Exception as e:
+        status.error(f"❌ Error: {str(e)}")
+        st.stop()
+    st.download_button(
+    label="📥 Download Travel Plan",
+    data=json.dumps(result, indent=2),
+    file_name="travel_plan.json",
+    mime="application/json"
+)
     st.divider()
 
     # -----------------------------------------
@@ -155,7 +196,9 @@ if run_button:
     with st.expander("🧠 Pipeline Execution Log"):
         for step in result["pipeline_log"]:
             st.write("•", step)
-
+    with st.expander("🧾 Conversation History"):
+        for h in st.session_state["history"]:
+            st.write("•", h)
     # -----------------------------------------
     # INTENT
     # -----------------------------------------
@@ -166,7 +209,9 @@ if run_button:
     # DESTINATIONS
     # -----------------------------------------
     st.subheader("📍 Recommended Destinations")
+    top_dest = travel_plan["destinations"]["recommended_destinations"][0]
 
+    st.success(f"🏆 Best Match: {top_dest['name']}, {top_dest['country']}")
     for dest in travel_plan["destinations"]["recommended_destinations"]:
         with st.container():
             st.markdown(

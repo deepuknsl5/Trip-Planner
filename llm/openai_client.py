@@ -14,14 +14,16 @@ def call_openai(system_prompt: str, user_prompt: str, temperature: float = 0.2) 
     """
     Calls OpenAI and forces structured JSON output.
     """
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            temperature=temperature,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        )
 
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        temperature=temperature,
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ]
-    )
-
-    return response.choices[0].message.content
+        return response.choices[0].message.content
+    except Exception as e:
+        return json.dumps({"error": str(e)})

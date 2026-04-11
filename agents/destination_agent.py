@@ -76,19 +76,61 @@ TRAVEL INTENT:
 {intent_data}
 
 TASK:
-Recommend exactly 3 realistic travel destinations that fit the intent.
-Consider budget, duration, travel purpose, and companions.
+Recommend EXACTLY 3 travel destinations.
 
-RULES:
-- Use city + country
-- Be mainstream and tourist-friendly
-- Avoid vague regions
-- Be honest about pros and cons
+CONSTRAINTS (STRICT):
+- If user specifies a destination_preference → stay within that region
+- If country_preference is given → do not go outside that country
+- If duration ≤ 3–5 days → suggest geographically nearby and realistic locations
+- If origin is given → prefer destinations reachable within reasonable travel time
+
+QUALITY RULES:
+- Do NOT override user intent
+- Do NOT suggest unrelated or far-away places
+- Avoid mixing regions (e.g., Himachal + South India)
+- Be geographically consistent
+
+OUTPUT REQUIREMENTS:
+Each destination must include:
+- name
+- country
+- why_suitable
+- best_for
+- budget_range
+- ideal_duration
+- best_season
+- pros
+- cons
 """
-
         result = convert_to_model(
             input_text=prompt,
             target_model=DestinationRecommendation
         )
 
-        return result.model_dump()
+        result_dict = result.model_dump()
+
+        destination_pref = intent_data.get("destination_preference", "")
+        country_pref = intent_data.get("country_preference", "")
+
+        filtered = []
+
+        for d in result_dict["recommended_destinations"]:
+            name = d["name"].lower()
+            country = d["country"].lower()
+
+            # ✅ Country constraint
+            if country_pref and country_pref.lower() not in country:
+                continue
+
+            # ✅ Destination preference (soft match)
+            if destination_pref:
+                if destination_pref.lower() not in name:
+                    # allow partial mismatch but penalize later
+                    pass
+
+            filtered.append(d)
+
+        # fallback if everything filtered out
+        if filtered:
+            result_dict["recommended_destinations"] = filtered[:3]
+        return result_dict

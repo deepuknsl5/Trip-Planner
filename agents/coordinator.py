@@ -88,10 +88,10 @@ class TravelPlannerCoordinator:
         context: Dict[str, Any] = {}
 
         # -------------------------------------------------
-        # 1. INTENT (SOURCE OF TRUTH)
+        # 1. INTENT
         # -------------------------------------------------
         intent = self.intent_agent.execute(user_input)
-        pipeline_log.append("IntentAgent → structured travel intent")
+        pipeline_log.append(f"IntentAgent: Extracted intent → {intent}")
 
         if not intent or "error" in intent:
             return self._fail("IntentAgent", intent, pipeline_log)
@@ -99,21 +99,45 @@ class TravelPlannerCoordinator:
         context["intent"] = intent
 
         # -------------------------------------------------
-        # 2. DESTINATION DISCOVERY
+        # 2. DESTINATION DISCOVERY (SMART ROUTING)
         # -------------------------------------------------
-        destinations = self.destination_agent.execute(intent)
-        pipeline_log.append("DestinationAgent → destination recommendations")
+        if intent.get("destination_preference"):
+            # ✅ Use user-defined destination
+            destinations = {
+                "recommended_destinations": [
+                    {
+                        "name": intent["destination_preference"],
+                        "country": intent.get("country_preference", "Unknown"),
+                        "why_suitable": "User-specified destination",
+                        "best_for": [],
+                        "budget_range": intent.get("budget_level", "Moderate"),
+                        "ideal_duration": f"{intent.get('duration_days', 3)} days",
+                        "best_season": "All year",
+                        "pros": ["Matches user intent"],
+                        "cons": []
+                    }
+                ]
+            }
 
-        if not destinations or not destinations.get("recommended_destinations"):
-            return self._fail("DestinationAgent", destinations, pipeline_log)
+            pipeline_log.append(
+                f"DestinationAgent skipped → using user destination: {intent['destination_preference']}"
+            )
+
+        else:
+            # ✅ Use AI to suggest destinations
+            destinations = self.destination_agent.execute(intent)
+            pipeline_log.append(f"DestinationAgent → {destinations}")
+
+            if not destinations or not destinations.get("recommended_destinations"):
+                return self._fail("DestinationAgent", destinations, pipeline_log)
 
         context["destinations"] = destinations
 
         # -------------------------------------------------
-        # 3. BUDGET FEASIBILITY (HARD GATE)
+        # 3. BUDGET ANALYSIS
         # -------------------------------------------------
         budget_analysis = self.budget_agent.execute(intent, destinations)
-        pipeline_log.append("BudgetAgent → budget feasibility analysis")
+        pipeline_log.append(f"BudgetAgent → {budget_analysis}")
 
         feasible_destinations = self.budget_agent.get_feasible_destinations(
             budget_analysis
@@ -133,13 +157,13 @@ class TravelPlannerCoordinator:
         context["feasible_destinations"] = feasible_destinations
 
         # -------------------------------------------------
-        # 4. EXPERIENCE CURATION (FEASIBLE ONLY)
+        # 4. EXPERIENCE CURATION
         # -------------------------------------------------
         experiences = self.experience_agent.execute(
             intent_data=intent,
             budget_data=budget_analysis,
         )
-        pipeline_log.append("ExperienceAgent → curated experiences")
+        pipeline_log.append(f"ExperienceAgent → {experiences}")
 
         if not experiences or not experiences.get("experience_plan"):
             experiences = {
@@ -150,15 +174,15 @@ class TravelPlannerCoordinator:
         context["experiences"] = experiences
 
         # -------------------------------------------------
-        # 5. ITINERARY CONSTRUCTION
+        # 5. ITINERARY
         # -------------------------------------------------
         itinerary = self.itinerary_agent.execute(
             intent_data=intent,
             experience_data=experiences,
         )
-        pipeline_log.append("ItineraryAgent → final itinerary")
+        pipeline_log.append(f"ItineraryAgent → {itinerary}")
 
-        if not itinerary or isinstance(itinerary, dict) and "error" in itinerary:
+        if not itinerary or (isinstance(itinerary, dict) and "error" in itinerary):
             itinerary = {
                 "warning": "Itinerary generation incomplete",
                 "details": itinerary,
@@ -174,7 +198,6 @@ class TravelPlannerCoordinator:
             "travel_plan": context,
             "pipeline_log": pipeline_log,
         }
-
     # -------------------------------------------------
     # INTERNAL ERROR HANDLING
     # -------------------------------------------------

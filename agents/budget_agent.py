@@ -76,25 +76,38 @@ class BudgetAgent:
 
     def execute(self, intent_data: dict, destination_data: dict) -> dict:
         prompt = f"""
-USER BUDGET & TRAVEL INTENT:
+USER INTENT:
 {intent_data}
 
-DESTINATIONS TO ANALYZE:
+DESTINATIONS:
 {destination_data}
 
 TASK:
 For EACH destination:
-- Estimate realistic total trip cost
-- Decide feasibility (feasible / not_feasible / tight_but_feasible)
-- Explain reasoning
-- Suggest cost-saving adjustments if needed
+
+1. Estimate total cost breakdown:
+   - flights
+   - stay
+   - food
+   - activities
+
+2. Decide feasibility:
+   - feasible
+   - tight_but_feasible
+   - not_feasible
+
+3. Give reasoning:
+   - explain cost vs budget mismatch clearly
+
+4. Suggest improvements:
+   - cheaper alternatives
+   - adjustments
 
 RULES:
-- Use conservative 2025 pricing
-- Be honest (no luxury on moderate budgets)
-- Do not hallucinate deals
+- Be realistic (2025 pricing)
+- No guessing luxury at low budget
+- No vague reasoning
 """
-
         result = convert_to_model(
             input_text=prompt,
             target_model=BudgetAnalysisResult

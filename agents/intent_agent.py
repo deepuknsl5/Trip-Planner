@@ -17,8 +17,22 @@ class IntentAgent:
         Convert raw user text into a validated TravelIntent model.
         """
 
+        prompt = f"""
+        Extract structured travel intent from user input.
+
+        IMPORTANT:
+        - Identify starting location (origin)
+        - Identify destination if explicitly mentioned
+        - Identify country if implied
+        - If user says "Himachal", map to India
+        - If user mentions "from Delhi", capture origin
+
+        USER INPUT:
+        {user_input}
+        """
+
         intent: TravelIntent = convert_to_model(
-            input_text=user_input,
+            input_text=prompt,
             target_model=TravelIntent
         )
 

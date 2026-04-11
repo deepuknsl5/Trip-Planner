@@ -11,7 +11,6 @@ def clean_json_string(text: str) -> str:
     text = re.sub(r"```(?:json)?\s*(.*?)```", r"\1", text, flags=re.DOTALL)
     return text.strip()
 
-
 def convert_to_model(input_text: str, target_model: Type[T]) -> T:
     schema = json.dumps(target_model.model_json_schema(), indent=2)
 
@@ -29,8 +28,14 @@ INPUT:
 {input_text}
 """
 
-    raw = call_openai(system_prompt, user_prompt, temperature=0)
-    cleaned = clean_json_string(raw)
+    for attempt in range(3):  # 🔥 retry logic
+        try:
+            raw = call_openai(system_prompt, user_prompt, temperature=0)
+            cleaned = clean_json_string(raw)
+            parsed = json.loads(cleaned)
+            return target_model.model_validate(parsed)
 
-    parsed = json.loads(cleaned)
-    return target_model.model_validate(parsed)
+        except Exception as e:
+            print(f"[Retry {attempt+1}] Error:", e)
+
+    raise ValueError("Failed to parse LLM response after 3 attempts")

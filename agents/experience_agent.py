@@ -87,22 +87,18 @@ TRAVEL INTENT:
 BUDGET ANALYSIS:
 {budget_data}
 
-TASK:
-ONLY for destinations marked as feasible:
-- Create signature experiences
-- Add cultural / food experiences
-- Add free or relaxing activities
-- Include insider tips
+IMPORTANT:
+- If only ONE destination → generate full experience plan for that location
+- Do NOT assume multiple destinations
 
-RULES:
-- No tourist traps
-- Mix budget & premium experiences
-- Match companions and travel purpose
+TASK:
+Generate detailed experiences for the given destination(s)
 """
 
         result = convert_to_model(
             input_text=prompt,
             target_model=ExperiencePlanResult
         )
-
+        if not result.experience_plan:
+            raise ValueError("No experiences generated")
         return result.model_dump()
