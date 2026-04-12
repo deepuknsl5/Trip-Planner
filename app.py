@@ -12,7 +12,7 @@ APP_TAGLINE = "Map your route. Own your journey."
 APP_SUBTITLE = (
     "Describe your trip in one line — WayMapper maps out the destinations, budget, and itinerary you need, fast."
 )
-BACKEND_URL = "http://127.0.0.1:8000/plan-trip"
+BACKEND_URL = "http://localhost:8000/plan-trip"
  
 PROMPT_PRESETS = [
     {
