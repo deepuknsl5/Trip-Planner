@@ -1,8 +1,8 @@
 services:
   - name: waymapper-backend
-    type: pserv
+    type: web
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     envVars:
@@ -20,19 +20,16 @@ services:
   - name: waymapper-frontend
     type: web
     runtime: python
-    plan: starter
+    plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
-    healthCheckPath: /
     envVars:
-      - key: BACKEND_HOSTPORT
+      - key: BACKEND_URL
         fromService:
           name: waymapper-backend
-          type: pserv
-          property: hostport
+          type: web
+          property: url
       - key: BACKEND_TIMEOUT_SECONDS
         value: "180"
-      - key: ALLOW_LOCAL_COORDINATOR_FALLBACK
-        value: "false"
       - key: LOG_LEVEL
         value: INFO
