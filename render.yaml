@@ -1,0 +1,38 @@
+services:
+  - name: waymapper-backend
+    type: pserv
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL
+        value: gpt-4o
+      - key: OPENAI_TIMEOUT_SECONDS
+        value: "30"
+      - key: OPENAI_MAX_RETRIES
+        value: "2"
+      - key: LOG_LEVEL
+        value: INFO
+
+  - name: waymapper-frontend
+    type: web
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
+    healthCheckPath: /
+    envVars:
+      - key: BACKEND_HOSTPORT
+        fromService:
+          name: waymapper-backend
+          type: pserv
+          property: hostport
+      - key: BACKEND_TIMEOUT_SECONDS
+        value: "180"
+      - key: ALLOW_LOCAL_COORDINATOR_FALLBACK
+        value: "false"
+      - key: LOG_LEVEL
+        value: INFO
