@@ -1,9 +1,11 @@
 import json
 import re
 from typing import Type, TypeVar
+from uuid import uuid4
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
+from llm.errors import LLMError, LLMResponseError
 from llm.openai_client import call_openai
 
 T = TypeVar("T", bound=BaseModel)
@@ -16,10 +18,13 @@ def clean_json_string(text: str) -> str:
 
 def convert_to_model(input_text: str, target_model: Type[T]) -> T:
     schema = json.dumps(target_model.model_json_schema(), indent=2)
+    request_id = str(uuid4())
 
     system_prompt = (
         "You are a strict JSON generator.\n"
         "Return ONLY valid JSON matching the schema.\n"
+        "If a fact is uncertain, prefer a safe estimate, generic area-level wording, or an explicit unknown over invention.\n"
+        "Do not invent tool outputs, citations, ratings, opening hours, or live data.\n"
         "No markdown. No explanations."
     )
 
@@ -45,15 +50,21 @@ Fix the JSON and return it again.
 """
 
         try:
-            raw = call_openai(system_prompt, user_prompt, temperature=0)
+            raw = call_openai(
+                system_prompt,
+                user_prompt,
+                temperature=0,
+                request_id=request_id,
+            )
             cleaned = clean_json_string(raw)
             parsed = json.loads(cleaned)
             return target_model.model_validate(parsed)
 
-        except Exception as e:
+        except (json.JSONDecodeError, ValidationError, ValueError, TypeError) as e:
             last_error = str(e)
-            print(f"[Retry {attempt+1}] Error:", e)
+        except LLMError:
+            raise
 
-    raise ValueError(
-        f"Failed to parse LLM response after 3 attempts. Last error: {last_error}"
+    raise LLMResponseError(
+        f"Failed to parse LLM response after 3 attempts for request_id={request_id}. Last error: {last_error}"
     )

@@ -1,10 +1,14 @@
 import json
+import logging
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
  
 import requests
 import streamlit as st
  
+from config import settings
 from agents.coordinator import TravelPlannerCoordinator
+from llm.errors import LLMError
  
  
 APP_NAME = "WayMapper"
@@ -12,7 +16,11 @@ APP_TAGLINE = "Map your route. Own your journey."
 APP_SUBTITLE = (
     "Describe your trip in one line — WayMapper maps out the destinations, budget, and itinerary you need, fast."
 )
-BACKEND_URL = "http://localhost:8000/plan-trip"
+BACKEND_URL = settings.backend_url
+
+
+logging.basicConfig(level=getattr(logging, settings.log_level, logging.INFO))
+logger = logging.getLogger(__name__)
  
 PROMPT_PRESETS = [
     {
@@ -396,6 +404,48 @@ def format_location(name: Any, country: Any) -> str:
     if clean_name and clean_country:
         return f"{clean_name}, {clean_country}"
     return clean_name or clean_country or "Not available"
+
+
+def get_trip_options(travel_plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    itinerary = travel_plan.get("itinerary", {})
+    if not isinstance(itinerary, dict):
+        return []
+    return itinerary.get("trip_options", [])
+
+
+def looks_like_edit_request(user_input: str) -> bool:
+    normalized = normalize_text(user_input)
+    edit_phrases = [
+        "make it cheaper",
+        "make this cheaper",
+        "add nightlife",
+        "remove museums",
+        "remove museum",
+        "change the plan",
+        "update the plan",
+        "edit the plan",
+        "swap ",
+        "replace ",
+        "remove ",
+        "add ",
+        "skip ",
+        "without ",
+        "less expensive",
+        "more affordable",
+        "budget-friendly",
+        "cheaper",
+        "nightlife",
+    ]
+    new_trip_signals = [
+        "plan a trip to",
+        "plan my trip to",
+        "suggest destinations",
+        "where should i go",
+        "weekend trip to",
+    ]
+    if any(signal in normalized for signal in new_trip_signals):
+        return False
+    return any(phrase in normalized for phrase in edit_phrases)
  
  
 def build_enhanced_input(
@@ -425,26 +475,111 @@ CURRENT REQUEST:
 """.strip()
  
  
-def post_to_backend(enhanced_input: str) -> Dict[str, Any]:
+def post_to_backend(
+    enhanced_input: str,
+    raw_user_input: str,
+    previous_result: Optional[Dict[str, Any]],
+    request_id: str,
+) -> Dict[str, Any]:
     response = requests.post(
         BACKEND_URL,
-        json={"user_input": enhanced_input},
-        timeout=60,
+        json={
+            "request_id": request_id,
+            "user_input": enhanced_input,
+            "raw_user_input": raw_user_input,
+            "previous_result": previous_result,
+        },
+        timeout=(10, settings.backend_timeout_seconds),
     )
     response.raise_for_status()
     return response.json()
  
  
-def generate_travel_plan(enhanced_input: str) -> Dict[str, Any]:
+def generate_travel_plan(
+    enhanced_input: str,
+    raw_user_input: str,
+    previous_result: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    request_id = str(uuid4())
     try:
-        result = post_to_backend(enhanced_input)
+        logger.info(
+            json.dumps(
+                {
+                    "event": "backend_request_started",
+                    "request_id": request_id,
+                    "backend_url": BACKEND_URL,
+                }
+            )
+        )
+        result = post_to_backend(
+            enhanced_input,
+            raw_user_input,
+            previous_result,
+            request_id,
+        )
         result["_execution_mode"] = "api"
+        result["request_id"] = request_id
+        logger.info(
+            json.dumps(
+                {
+                    "event": "backend_request_succeeded",
+                    "request_id": request_id,
+                    "backend_url": BACKEND_URL,
+                }
+            )
+        )
         return result
-    except Exception:
-        coordinator = TravelPlannerCoordinator()
-        result = coordinator.run(enhanced_input)
-        result["_execution_mode"] = "local"
-        return result
+    except requests.RequestException as exc:
+        logger.error(
+            json.dumps(
+                {
+                    "event": "backend_request_failed",
+                    "request_id": request_id,
+                    "backend_url": BACKEND_URL,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                    "fallback_enabled": settings.allow_local_coordinator_fallback,
+                }
+            )
+        )
+        if settings.allow_local_coordinator_fallback:
+            logger.warning(
+                json.dumps(
+                    {
+                        "event": "local_fallback_enabled",
+                        "request_id": request_id,
+                        "backend_url": BACKEND_URL,
+                    }
+                )
+            )
+            coordinator = TravelPlannerCoordinator()
+            result = coordinator.run(
+                user_input=enhanced_input,
+                previous_result=previous_result,
+                raw_user_input=raw_user_input,
+            )
+            result["_execution_mode"] = "local"
+            result["request_id"] = request_id
+            result["_fallback_reason"] = str(exc)
+            return result
+        raise RuntimeError(
+            f"Trip planner backend is unavailable at {BACKEND_URL} for request_id={request_id}. "
+            "Set ALLOW_LOCAL_COORDINATOR_FALLBACK=true only if you explicitly want local fallback."
+        ) from exc
+    except LLMError:
+        raise
+    except Exception as exc:
+        logger.error(
+            json.dumps(
+                {
+                    "event": "trip_generation_unexpected_failure",
+                    "request_id": request_id,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                }
+            )
+        )
+        raise RuntimeError("Trip generation failed unexpectedly.") from exc
  
  
 def find_budget_item(travel_plan: Dict[str, Any], destination_name: str) -> Optional[Dict[str, Any]]:
@@ -605,13 +740,67 @@ def render_primary_result(result: Dict[str, Any], focus: str) -> None:
  
     if data is not None:
         st.json(data)
+
+
+def render_quality_report(result: Dict[str, Any]) -> None:
+    quality_report = result.get("quality_report") or {}
+    if not quality_report:
+        return
+
+    st.markdown("### Quality Check")
+    quality_items = [
+        ("This saved me time", quality_report.get("saves_time")),
+        ("This plan actually works", quality_report.get("works_in_real_world")),
+        ("It feels personalized", quality_report.get("feels_personalized")),
+    ]
+
+    for label, passed in quality_items:
+        prefix = "PASS" if passed else "REVIEW"
+        st.markdown(f"- **{prefix}** {label}")
+
+    strengths = quality_report.get("strengths") or []
+    if strengths:
+        st.markdown("**Why this plan is strong**")
+        for item in strengths:
+            st.markdown(f"- {item}")
+
+    issues = quality_report.get("issues") or []
+    if issues:
+        st.markdown("**What was tightened**")
+        for item in issues:
+            st.markdown(f"- {item}")
+
+
+def render_grounding_report(result: Dict[str, Any]) -> None:
+    grounding_report = result.get("grounding_report") or {}
+    if not grounding_report:
+        return
+
+    st.markdown("### Grounding Check")
+    grounding_items = [
+        ("Avoids invented specifics", grounding_report.get("avoids_invented_specifics")),
+        ("Consistent across planner sections", grounding_report.get("consistent_across_sections")),
+        ("Uses estimates, not fake precision", grounding_report.get("uses_estimates_not_fake_precision")),
+    ]
+
+    for label, passed in grounding_items:
+        prefix = "PASS" if passed else "REVIEW"
+        st.markdown(f"- **{prefix}** {label}")
+
+    issues = grounding_report.get("issues") or []
+    if issues:
+        st.markdown("**Risk controls applied**")
+        for item in issues:
+            st.markdown(f"- {item}")
  
  
 def render_summary(travel_plan: Dict[str, Any], focus: str) -> None:
     intent = travel_plan.get("intent", {})
     top_destination = get_top_destination(travel_plan)
     top_budget = find_budget_item(travel_plan, top_destination["name"]) if top_destination else None
-    itinerary_days = travel_plan.get("itinerary", {}).get("itinerary", [])
+    itinerary_payload = travel_plan.get("itinerary", {})
+    itinerary_days = itinerary_payload.get("itinerary", []) if isinstance(itinerary_payload, dict) else []
+    trip_options = get_trip_options(travel_plan)
     planner_brief = travel_plan.get("planner_brief")
     assumptions = travel_plan.get("assumptions", [])
  
@@ -662,6 +851,18 @@ def render_summary(travel_plan: Dict[str, Any], focus: str) -> None:
     if itinerary_days:
         summary_points.append(
             f"Itinerary mapped for {len(itinerary_days)} day(s) with structured pacing."
+        )
+    if trip_options:
+        summary_points.append(
+            f"{trip_options[0].get('label', 'Primary option')}: {trip_options[0].get('summary', 'Balanced route with practical timing.')}"
+        )
+    if len(trip_options) > 1:
+        summary_points.append(
+            f"{trip_options[1].get('label', 'Alternative option')}: {trip_options[1].get('summary', 'Backup plan prepared for tradeoffs.')}"
+        )
+    if isinstance(itinerary_payload, dict) and itinerary_payload.get("internal_transport_tip"):
+        summary_points.append(
+            f"Local transport: {itinerary_payload.get('internal_transport_tip')}"
         )
     if intent.get("special_preferences"):
         summary_points.append(
@@ -826,24 +1027,82 @@ def render_experiences(travel_plan: Dict[str, Any]) -> None:
 def render_itinerary(travel_plan: Dict[str, Any]) -> None:
     itinerary = travel_plan.get("itinerary", {})
     st.subheader("Trip Itinerary")
- 
+
     if not isinstance(itinerary, dict) or "itinerary" not in itinerary:
         st.info("A structured itinerary could not be mapped for this trip.")
         if itinerary:
             st.json(itinerary)
         return
  
-    days = itinerary.get("itinerary", [])
-    tabs = st.tabs([display_value(day.get("day"), "Day") for day in days])
-    for tab, day in zip(tabs, days):
-        with tab:
-            for item in day.get("plan", []):
+    if itinerary.get("trip_style"):
+        st.markdown(f"**Trip style:** {display_value(itinerary.get('trip_style'))}")
+    if itinerary.get("planning_logic"):
+        st.caption(display_value(itinerary.get("planning_logic")))
+    if itinerary.get("internal_transport_tip"):
+        st.info(display_value(itinerary.get("internal_transport_tip")))
+
+    trip_options = itinerary.get("trip_options", [])
+    if trip_options:
+        st.markdown("**Trip options**")
+        option_cols = st.columns(len(trip_options))
+        for col, option in zip(option_cols, trip_options):
+            with col:
                 st.markdown(
                     f"""
                     <div class="timeline-card">
-                        <div class="timeline-slot">{display_value(item.get('time_slot'))}</div>
-                        <div class="timeline-title">{display_value(item.get('activity'))}</div>
-                        <p class="timeline-note">{display_value(item.get('notes'))}</p>
+                        <div class="timeline-slot">{display_value(option.get('label'))}</div>
+                        <div class="timeline-title">{display_value(option.get('estimated_total_cost'), 'Cost TBD')}</div>
+                        <p class="timeline-note">
+                            {display_value(option.get('summary'))}<br/>
+                            Best for: {display_value(option.get('best_for'))}<br/>
+                            Tradeoff: {display_value(option.get('tradeoff'))}
+                        </p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+    days = itinerary.get("itinerary", [])
+    if not days:
+        st.info("A structured itinerary could not be mapped for this trip.")
+        return
+
+    tabs = st.tabs([display_value(day.get("day"), "Day") for day in days])
+    for tab, day in zip(tabs, days):
+        with tab:
+            day_meta = [
+                f"Date: {display_value(day.get('date'))}",
+                f"Area: {display_value(day.get('zone'))}",
+                f"Theme: {display_value(day.get('theme'))}",
+                f"Day timing: {display_value(day.get('start_time'))} - {display_value(day.get('end_time'))}",
+                f"Day cost: {display_value(day.get('estimated_day_cost'))}",
+            ]
+            st.markdown(" | ".join(day_meta))
+            st.caption(display_value(day.get("local_transport_strategy")))
+
+            for item in day.get("plan", []):
+                transit_mode = item.get("transit_mode_from_previous")
+                transit_minutes = item.get("transit_time_from_previous_minutes")
+                transit_text = "Start of day"
+                if transit_mode and transit_minutes is not None:
+                    transit_text = f"{transit_mode} {transit_minutes} min from previous stop"
+                elif transit_mode:
+                    transit_text = transit_mode
+
+                timing = (
+                    f"{display_value(item.get('start_time'))} - {display_value(item.get('end_time'))}"
+                )
+                st.markdown(
+                    f"""
+                    <div class="timeline-card">
+                        <div class="timeline-slot">{timing} | {display_value(item.get('category'))}</div>
+                        <div class="timeline-title">{display_value(item.get('activity'))} @ {display_value(item.get('place'))}</div>
+                        <p class="timeline-note">
+                            Transit: {transit_text} | Buffer: {display_value(item.get('buffer_minutes'), '0')} min | Cost: {display_value(item.get('estimated_cost'))}<br/>
+                            Why this stop: {display_value(item.get('reason_to_visit'))}<br/>
+                            Notes: {display_value(item.get('notes'))}<br/>
+                            Backup: {display_value(item.get('backup_option'))}
+                        </p>
                     </div>
                     """,
                     unsafe_allow_html=True,
@@ -923,6 +1182,7 @@ def render_result_header(result: Dict[str, Any], focus: str) -> None:
     intent = travel_plan.get("intent", {})
     top_destination = get_top_destination(travel_plan)
     planner_brief = result.get("planner_brief") or travel_plan.get("planner_brief")
+    generation_mode = display_value(result.get("generation_mode"), "fresh_plan").replace("_", " ").title()
     mode = display_value(result.get("_execution_mode"), "api").upper()
  
     st.markdown("## Your Trip Map")
@@ -932,6 +1192,7 @@ def render_result_header(result: Dict[str, Any], focus: str) -> None:
             <div class="panel">
                 <h3>{planner_brief}</h3>
                 <div class="pill-row">
+                    <span class="pill">Workflow: {generation_mode}</span>
                     <span class="pill">Focus: {focus.replace('_', ' ').title()}</span>
                     <span class="pill">Mode: {mode}</span>
                     <span class="pill">Duration: {display_value(intent.get('duration_days'), 'N/A')} days</span>
@@ -996,6 +1257,7 @@ def render_result(result: Dict[str, Any], requested_focus: str) -> None:
     focus = result.get("response_focus", requested_focus)
     travel_plan = result.get("travel_plan", {})
     assumptions = result.get("assumptions") or travel_plan.get("assumptions", [])
+    edit_summary = result.get("edit_summary")
  
     render_result_header(result, focus)
  
@@ -1011,10 +1273,14 @@ def render_result(result: Dict[str, Any], requested_focus: str) -> None:
                 for item in assumptions
             )
             st.markdown(chips, unsafe_allow_html=True)
- 
+
+        render_grounding_report(result)
+        render_quality_report(result)
         render_primary_result(result, focus)
  
     with board_tab:
+        if edit_summary:
+            st.success(f"Updated existing trip map: {display_value(edit_summary)}")
         render_summary(travel_plan, focus)
         render_ordered_sections(travel_plan, focus)
  
@@ -1033,23 +1299,38 @@ def render_result(result: Dict[str, Any], requested_focus: str) -> None:
  
 def run_generation(user_input: str, focus_override: Optional[str]) -> None:
     requested_focus = focus_override or detect_response_focus(user_input)
+    previous_result = st.session_state.get("last_result")
+    is_edit_request = bool(previous_result and looks_like_edit_request(user_input))
     enhanced_input = build_enhanced_input(
         current_request=user_input,
         history=st.session_state["history"],
         focus_override=focus_override,
     )
  
-    with st.status("Mapping your trip...", expanded=True) as status:
+    with st.status("Updating your trip..." if is_edit_request else "Mapping your trip...", expanded=True) as status:
         try:
             st.write("Understanding your request")
-            st.write("Mapping destinations")
-            st.write("Calculating budget feasibility")
-            st.write("Curating experiences")
-            st.write("Building the route itinerary")
-            result = generate_travel_plan(enhanced_input)
+            if is_edit_request:
+                st.write("Loading your current trip map")
+                st.write("Applying targeted edits instead of restarting the plan")
+                st.write("Refreshing budget, experiences, and itinerary consistency")
+            else:
+                st.write("Mapping destinations")
+                st.write("Calculating budget feasibility")
+                st.write("Curating experiences")
+                st.write("Building the route itinerary")
+            result = generate_travel_plan(
+                enhanced_input=enhanced_input,
+                raw_user_input=user_input,
+                previous_result=previous_result,
+            )
             mode = result.get("_execution_mode", "api")
             status.update(
-                label=f"Trip map ready ({'backend API' if mode == 'api' else 'local fallback'})",
+                label=(
+                    f"Trip update ready ({'backend API' if mode == 'api' else 'local fallback'})"
+                    if result.get("generation_mode") == "iterative_edit"
+                    else f"Trip map ready ({'backend API' if mode == 'api' else 'local fallback'})"
+                ),
                 state="complete",
             )
         except Exception as exc:
@@ -1061,7 +1342,7 @@ def run_generation(user_input: str, focus_override: Optional[str]) -> None:
     st.session_state["history"] = st.session_state["history"][-12:]
     st.session_state["last_result"] = result
     st.session_state["last_request"] = user_input
-    st.session_state["last_focus"] = requested_focus
+    st.session_state["last_focus"] = result.get("response_focus", requested_focus)
  
  
 def render_workspace() -> None:
@@ -1074,6 +1355,7 @@ def render_workspace() -> None:
             <div class="panel workspace-panel">
                 <h3>Where do you want to go?</h3>
                 <p>Describe your trip in one line. WayMapper will map out destinations, budget, and itinerary — showing the most relevant view first.</p>
+                <p>Follow-up edits also work: make it cheaper, add nightlife, remove museums.</p>
                 <div class="planner-divider"></div>
             </div>
             """,

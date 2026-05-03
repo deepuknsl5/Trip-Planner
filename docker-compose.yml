@@ -1,0 +1,47 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: waymapper-backend
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000
+    env_file:
+      - .env
+    environment:
+      LOG_LEVEL: INFO
+      ALLOW_LOCAL_COORDINATOR_FALLBACK: "false"
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/', timeout=5).read()",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: waymapper-frontend
+    command: streamlit run app.py --server.port=8501 --server.address=0.0.0.0
+    env_file:
+      - .env
+    environment:
+      BACKEND_URL: http://backend:8000/plan-trip
+      BACKEND_TIMEOUT_SECONDS: "180"
+      LOG_LEVEL: INFO
+      ALLOW_LOCAL_COORDINATOR_FALLBACK: "false"
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

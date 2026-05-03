@@ -89,6 +89,8 @@ QUALITY RULES:
 - Do NOT suggest unrelated or far-away places
 - Avoid mixing regions (e.g., Himachal + South India)
 - Be geographically consistent
+- Do NOT invent obscure micro-locations to sound smart
+- If uncertain, prefer well-known city or region names over overly specific local claims
 
 OUTPUT REQUIREMENTS:
 Each destination must include:

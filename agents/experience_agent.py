@@ -37,6 +37,14 @@ IMPORTANT:
 
 TASK:
 Generate detailed experiences for the given destination(s)
+
+QUALITY RULES:
+- The output should save the user time by surfacing the most relevant experiences first
+- The recommendations must feel practical for the user's budget and trip scope
+- The recommendations must feel personalized to the request, not like a generic city list
+- Do NOT invent exact restaurant, cafe, hotel, shop, or venue names unless they are globally well-known landmarks
+- If a specific place is uncertain, use an area-level or landmark-level description instead
+- Treat cost and timing as practical estimates, not guaranteed facts
 """
 
         result = convert_to_model(
