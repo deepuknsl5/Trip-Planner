@@ -5,17 +5,6 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_MODEL
-        value: gpt-4o
-      - key: OPENAI_TIMEOUT_SECONDS
-        value: "30"
-      - key: OPENAI_MAX_RETRIES
-        value: "2"
-      - key: LOG_LEVEL
-        value: INFO
 
   - name: waymapper-frontend
     type: web
@@ -25,11 +14,4 @@ services:
     startCommand: streamlit run app.py --server.address 0.0.0.0 --server.port $PORT --server.headless true
     envVars:
       - key: BACKEND_URL
-        fromService:
-          name: waymapper-backend
-          type: web
-          property: url
-      - key: BACKEND_TIMEOUT_SECONDS
-        value: "180"
-      - key: LOG_LEVEL
-        value: INFO
+        value: "https://waymapper-backend.onrender.com"
